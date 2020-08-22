@@ -10,10 +10,21 @@ using ForwardDiff
     @views @inbounds f(du[:,i],u[:,i],p[:,i],t)
 end
 
+@kernel function gpu_kernel_oop(@Const(f),du,@Const(u),@Const(p),@Const(t))
+    i = @index(Global, Linear)
+    @views @inbounds du[:,i] = f(u[:,i],p[:,i],t)
+end
+
 @kernel function jac_kernel(@Const(f),J,@Const(u),@Const(p),@Const(t))
     i = @index(Global, Linear)-1
     section = 1 + (i*size(u,1)) : ((i+1)*size(u,1))
     @views @inbounds f(J[section,section],u[:,i+1],p[:,i+1],t)
+end
+
+@kernel function jac_kernel_oop(@Const(f),J,@Const(u),@Const(p),@Const(t))
+    i = @index(Global, Linear)-1
+    section = 1 + (i*size(u,1)) : ((i+1)*size(u,1))
+    @views @inbounds J[section,section] = f(u[:,i+1],p[:,i+1],t)
 end
 
 @kernel function discrete_condition_kernel(@Const(condition),cur,@Const(u),@Const(t),@Const(p))
@@ -207,11 +218,11 @@ function batch_solve(ensembleprob,alg,ensemblealg,I;kwargs...)
 end
 
 function generate_problem(prob::ODEProblem,u0,p,jac_prototype,colorvec)
-    _f = let f=prob.f.f
+    _f = let f=prob.f.f, kernel = DiffEqBase.isinplace(prob) ? gpu_kernel : gpu_kernel_oop
         function (du,u,p,t)
             version = u isa CuArray ? CUDADevice() : CPU()
             wgs = workgroupsize(version,size(u,2))
-            wait(version, gpu_kernel(version)(f,du,u,p,t;ndrange=size(u,2),
+            wait(version, kernel(version)(f,du,u,p,t;ndrange=size(u,2),
                                               dependencies=Event(version),
                                               workgroupsize=wgs))
         end
@@ -272,11 +283,11 @@ function generate_problem(prob::ODEProblem,u0,p,jac_prototype,colorvec)
 end
 
 function generate_problem(prob::SDEProblem,u0,p,jac_prototype,colorvec)
-    _f = let f=prob.f.f
+    _f = let f=prob.f.f, kernel = DiffEqBase.isinplace(prob) ? gpu_kernel : gpu_kernel_oop
         function (du,u,p,t)
             version = u isa CuArray ? CUDADevice() : CPU()
             wgs = workgroupsize(version,size(u,2))
-            wait(version, gpu_kernel(version)(f,du,u,p,t;
+            wait(version, kernel(version)(f,du,u,p,t;
                                               ndrange=size(u,2),
                                               dependencies=Event(version),
                                               workgroupsize=wgs))
